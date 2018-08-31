@@ -1,9 +1,7 @@
-# monadic-parsing
-Monadic parsing in Scheme.
+# monadic-parsing - Monadic parsing in Scheme
 
-Admittedly it should be written in Haskell, but this was an experiment
-in writing it in Scheme.  Things could be cleaned up with better
-macros.
+Normally boasted in Haskell, but this repository goes to show that the
+same can be done in Scheme.
 
 ## Usage
 
@@ -20,17 +18,29 @@ May be converted to the following Scheme equivalent (using the `letM*`
 macro).
 
 ```scheme
-(define my-parser
+(define my_parser
   (letM* ((a item)
           (_ item)
           (b item))
     (return (cons a b))))
 ```
 
-The `_` binding isn't actually ignored, if I had put `(return _)` then
-it would have returned the character consumed on `item`.  However, one
-should use the convention of "assigning" to `_` as saying the parsed
-thing in question will not be used further.
+The `_` binding isn't actually ignored, if we had put `(return _)`
+then we would have returned the character consumed on the second
+`item`.  However, one should use the convention of "assigning" to `_`
+as saying the parsed thing in question will not be used further.
+
+We can then use our parser, without needing to worry about all the
+monadic magic happening underneath.
+
+```scheme
+(my-parser "hello") ;; => ((#\h . #\l) . "lo") ;; "lo" was not consumed.
+(my-parser "ah") ;; => ()
+```
+
+You'll know that your parser failed when it returns the empty list.
+Dive into the well-commented `parsing.scm` file to see operators like
+`+++`, `many`, `oneof`, `token` and more, with examples included!
 
 ## Included Parsers
 - `expr`: Demonstration of parsing arithmetic expressions into s-exps
@@ -39,7 +49,17 @@ thing in question will not be used further.
   - e.g. `2+(3*4)`, `2+3+10*8` etc.
 - `read-num-list`: Read lists of numbers such as `[3,1,4,1,5]` and
   returns them as Scheme lists `(3 1 4 1 5)`.
-  - Fails nicely (i.e. returns `()` on malformed input like `[1,2,]` etc.)
+  - Fails nicely (i.e. returns `()` on malformed input like `[1,2,]`
+    etc.)
+- `bnf-syntax`: Backus–Naur form parser.  BNF is a notation that is
+  used to describe context-free grammars.
+  
+
+Demo of the BNF parser below.
+```scheme
+(bnf-syntax "<integer> ::= <digit>|<integer><digit>")
+;; => ((bnf-rule integer (or (digit) (integer digit))) . "")
+```
   
 ## Papers and Resources
 Most of these functions come from papers on monads and monadic
@@ -57,10 +77,9 @@ There were differences in the naming of functions in these resources
 (e.g. `return` `(a -> M a)` is called `unit` in Wadler's paper).  I
 use my own conventions here, yours may differ.
 
-## Improvements
+## To be implemented
 - Support ambiguous grammars
-
-## Extensions
+  - Done in Haskell with list comprehensions and the List monad, which
+    means we may need to implement monad transformers.
 - XML parser.
-- A parser for parsing regexps into Scheme/Haskell parsers (!)
-- Converting BNF into parsers.
+- Parsing BNF into Scheme/Haskell parsers!
