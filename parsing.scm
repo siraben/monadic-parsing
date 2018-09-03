@@ -1,5 +1,19 @@
 ;; Monadic parsing in Scheme
 
+;; Helper procedures `compile-port' and `emit' for output.
+(define compile-port
+  (make-parameter
+   (current-output-port)
+   (lambda (p)
+     (unless (output-port? p)
+       (error 'compile-port (format #t "Not an output port ~s." p)))
+     p)))
+
+(define (emit . args)
+  (apply format (compile-port) args)
+  (format (compile-port) "")
+  (newline (compile-port)))
+
 ;; Scheme doesn't treat strings like lists, but we can!
 (define (string-car s) (string-ref s 0))
 (define (string-cdr s) (substring s 1))
@@ -42,7 +56,7 @@
 
 ;; Failure.
 ;; Parser m -> ()
-(define zero
+(define fail
   (lambda (s)
     '()))
 
@@ -67,6 +81,18 @@
             (letM* ((name2 val2) ...)
                    expr))))))
 
+
+(define-syntax doM*
+  (syntax-rules (let let* letrec letrec* <-)
+    ((doM* s)                         s)
+    ((doM* (x <- s) ss ...)           (>>= s (lambda (x) (doM* ss ...))))
+    ((doM* (let bs) ss ...)           (let bs (doM* ss ...)))
+    ((doM* (let* bs) ss ...)          (let* bs (doM* ss ...)))
+    ((doM* (letrec bs) ss ...)        (letrec bs (doM* ss ...)))
+    ((doM* (letrec* bs) ss ...)       (letrec* bs (doM* ss ...)))
+    ((doM* s ss ...)                  (>>= s (lambda (_) (doM* ss ...))))))
+
+
 ;; Given two parsers p and q, try p then if that fails try q.
 (define +++
   (lambda (p q)
@@ -76,14 +102,22 @@
             (q string)
             res)))))
 
+;; Choice operator
+(define-syntax <:>
+  (syntax-rules ()
+    ((_ a)
+     a)
+    ((_ a b ...)
+     (+++ a (<:> b ...)))))
+
 ;; Lift a predicate into a parser.
 ;; (Char -> Bool) -> Parser Char
 (define sat
   (lambda (p)
-    (letM* ((c item))
-           (if (p c)
-               (return c)
-               zero))))
+    (doM* (c <- item)
+          (if (p c)
+              (return c)
+              fail))))
 
 ;; Make a parser that only accepts a certain character.
 ;; Char -> Parser Char
@@ -91,60 +125,75 @@
   (sat (lambda (t)
          (eq? t c))))
 
-;; Allows a parser p to be repeated zero or more times.
+;; Allows a parser p to be repeated fail or more times.
 (define (many p)
-  (+++ (many1 p) (return '())))
+  (<:> (many1 p) (return '())))
 
 ;; Allows a parser p to be repeated one or more times.
 ;; many and many1 are mutually recursive.
 (define (many1 p)
-  (letM* ((a p)
-          (as (many p)))
-         ;; We use cons-string here because we want to possibly
-         ;; collect individual characters into strings.
-         (return (cons-string a as))))
+  (doM* (a <- p)
+        (as <- (many p))
+        ;; We use cons-string here because we want to possibly
+        ;; collect individual characters into strings.
+        (return (cons-string a as))))
+
+;; Allows a parser p to be repeated fail or more times.
+(define (many-n p)
+  (<:> (many1-n p) (return '())))
+
+;; Allows a parser p to be repeated one or more times.
+;; many-n and many1-n are mutually recursive.
+(define (many1-n p)
+  (doM* (a <- p)
+        (as <- (many-n p))
+        ;; We use cons here because we want collect whatever the
+        ;; parser returned into a list.  This is a limitation of
+        ;; using Scheme, as strings aren't lists of characters.
+        (return (cons a as))))
+
 
 ;; Eat whitespace.
 (define space
   (many (char #\space)))
 
 ;; Turn a parser p into a "token" parser, i.e. one that also eats up
-;; whitespsace following the parse.
+;; whitespace following the parse.
 (define (token p)
-  (letM* ((a p)
-          (_ space))
-         (return a)))
+  (doM* (a <- p)
+        space
+        (return a)))
 
 ;; Make a parser that only accepts a certain string s.
 (define (str s)
   (if (string-null? s)
-      (return "")
+      (return '())
       (let ((c (string-car s))
             (cs (string-cdr s)))
-        (letM* ((_ (char c))
-                (_ (str cs)))
-               ;; Use string-concatenate/shared for possible speedup,
-               ;; also because no mutation is performed.
-               (return (string-concatenate/shared `(,(string c) ,cs)))))))
+        (doM* (char c)
+              (str cs)
+              ;; Use string-concatenate/shared for possible speedup,
+              ;; also because no mutation is performed.
+              (return (string-concatenate/shared `(,(string c) ,cs)))))))
 
 ;; Tokenize a string.
 (define (symb cs)
   (token (str cs)))
 
 ;; Before applying parser p, eat up leading whitespace.
-(define (apply p)
-  (letM* ((_ space))
-         p))
+(define (apply-p p)
+  (doM* space
+        p))
 
 ;; Haven't found a good use for chainl and chainl1, not sure if it
-;; works as expected.  Taken from Hutton's paper on Monadic parsing.
+;; works as expected.  Taken from Hutton's paper on monadic parsing.
 (define (chainl p op a)
-  (+++ (chainl1 p op)
+  (<:> (chainl1 p op)
        (return a)))
 
 (define (chainl1 p op)
   (define (rest a)
-    (+++ (letM* ((f op)
+    (<:> (letM* ((f op)
                  (b p))
                 (rest (f a b)))
          (return a)))
@@ -157,17 +206,17 @@
   (letM* ((a m))
          (if (p a)
              (return a)
-             zero)))
+             fail)))
 
 ;; Parse a single numeric character.
 (define digit
-  (letM* ((a (:> item char-numeric?)))
-         (return a)))
+  (doM* (a <- (:> item char-numeric?))
+        (return a)))
 
 ;; Parse a natural number.
 (define nat
-  (letM* ((xs (many1 digit)))
-         (return (string->number xs))))
+  (doM* (xs <- (many1 digit))
+        (return (string->number xs))))
 
 ;; A natural number, with whitespace following.
 (define natural
@@ -175,11 +224,11 @@
 
 ;; Read a list of numbers in the format: [1,2,3,4]
 (define read-num-list
-  (letM* ((_ (symb "["))
-          (n natural)
-          (ns (many (letM* ((_ (symb ","))) natural)))
-          (_ (symb "]")))
-         (return (cons n ns))))
+  (doM* (symb "[")
+        (n <- natural)
+        (ns <- (many-n (letM* ((_ (symb ","))) natural)))
+        (symb "]")
+        (return (cons n ns))))
 
 
 ;;; Mathematical infix parsing.
@@ -190,49 +239,57 @@
 
 ;; Convert them into s-exps.
 (define factor
-  (+++ (letM* ((_ (symb "("))
-               (e expr)
-               (_ (symb ")")))
-              (return e))
+  (<:> (doM* (symb "(")
+             (e <- expr)
+             (symb ")")
+             (return e))
        natural))
 
 
 (define term
   (letM* ((f factor))
-         (+++ (letM* ((_ (symb "*"))
-                      (t term))
-                     ;; Change this line to
-                     ;; (return (* f t))
-                     ;; to evaluate.
-                     (return `(* ,f ,t)))
+         (<:> (doM* (symb "*")
+                    (t <- term)
+                    ;; Change this line to
+                    ;; (return (* f t))
+                    ;; to evaluate.
+                    (return `(* ,f ,t)))
               (return f))))
 
 (define expr
-  (letM* ((t term))
-         (+++ (letM* ((_ (symb "+"))
-                      (e expr))
-                     ;; Change this line to
-                     ;; (return (+ t e))
-                     ;; to evaluate.
-                     (return `(+ ,t ,e)))
-              (return t))))
+  (doM* (t <- term)
+        (<:> (doM* (symb "+")
+                   (e <- expr)
+                   ;; Change this line to
+                   ;; (return (+ t e))
+                   ;; to evaluate.
+                   (return `(+ ,t ,e)))
+             (return t))))
 
 ;; Get all the words in a sentence, space separated.
 (define words
-  (letM* ((_ space)
-          ;; FIXME: Looking bad!
-          (w (many (apply (many1 (sat (lambda (x) (not (eq? x #\space)))))))))
-         (return w)))
+  (doM* space
+        (w <- (many-n (apply-p (many1 (noneof " ")))))
+        (return w)))
 
 ;; From a paper, forgot which one.
 (define (sepby p sep)
-  (+++ (sepby1 p sep)
+  (<:> (sepby1 p sep)
        (return '())))
 
 (define (sepby1 p sep)
-  (letM* ((a p)
-          (as (many (letM* ((_ sep)) p))))
-         (return (cons a as))))
+  (doM* (a <- p)
+        (as <- (many (letM* ((_ sep) (a p)) (return a))))
+        (return (cons a as))))
+
+(define (sepby-n p sep)
+  (<:> (sepby1-n p sep)
+       (return '())))
+
+(define (sepby1-n p sep)
+  (doM* (a <- p)
+        (as <- (many-n (letM* ((_ sep) (a p)) (return a))))
+        (return (cons a as))))
 
 ;; Parse an alphabetic character.
 (define alpha
@@ -244,7 +301,7 @@
              (or (char-alphabetic? x)
                  (char-numeric? x)))))
 
-;; Consume a string until a character is hit.
+;; Consume a string up to a given character.
 (define (up-to c)
   (letM* ((a (many (sat (lambda (x) (not (eq? x c)))))))
          (return a)))
@@ -254,72 +311,81 @@
 (define (oneof string)
   (sat (lambda (x) (char-set-contains? (string->char-set string) x))))
 
+(define (noneof string)
+  (sat (lambda (x) (not (char-set-contains? (string->char-set string) x)))))
+
 ;;; BNF parser.
 ;; Rules are taken directly from Wikipedia
 ;; (https://en.wikipedia.org/wiki/Backus%E2%80%93Naur_Form#Further_examples).
 
 ;; <line-end> ::= <opt-whitespace> <EOL> | <line-end> <line-end>
 (define line-end
-  ;; Notice that the use of many can help eliminate uses of | in
+  ;; Notice that the use of `many' can help eliminate uses of | in
   ;; recursive definitions.
   (many (letM* ((_ space))
                (char #\newline))))
 
-;; <rule> ::= <opt-whitespace> "<" <rule-name> ">" <opt-whitespace> "::=" <opt-whitespace> <expression> <line-end>
-(define rule
-  (letM* ((_ space)
-          (_ (str "<"))
-          (rn rule-name)
-          (_ (str ">"))
-          (_ space)
-          (_ (str "::="))
-          (_ space)
-          (e bnf-expr)
-          (_ line-end))
-         (return `(bnf-rule ,rn ,e))))
-;; <syntax> ::= <rule> | <rule> <syntax>
-(define bnf-syntax
-  (+++ (letM* ((r rule)
-               (s bnf-syntax))
-              (return (cons r s)))
-       rule))
 
 ;; <literal> ::= '"' <text1> '"' | "'" <text2> "'"
 (define literal
-  (+++ (letM* ((_ (char #\"))
+  (<:> (letM* ((_ (char #\"))
                (t1 text1)
                (_ (char #\")))
-              (return `(l1 ,t1)))
+              (return `(str ,t1)))
        (letM* ((_ (char #\'))
                (t2 text2)
                (_ (char #\')))
-              (return `(l2 ,t2)))))
+              (return `(str ,t2)))))
+
 
 ;; <term> ::= <literal> | "<" <rule-name> ">"
 (define bnf-term
-  (+++ (letM* ((_ (char #\<))
-               (rn rule-name)
-               (_ (char #\>)))
-              (return (list rn)))
+  (<:> (doM* (char #\<)
+             (rn <- rule-name)
+             (char #\>)
+             (return (list rn)))
        literal))
+
 
 ;; <list> ::= <term> | <term> <opt-whitespace> <list>
 (define bnf-list
-  (+++ (letM* ((t bnf-term)
-               (_ space)
-               (l bnf-list))
-              (return (append t l)))
+  (<:> (doM* (t <- bnf-term)
+             space
+             (l <- bnf-list)
+             (return `(,t ,l)))
        bnf-term))
 
-;; <expression> ::= <list> | <list> <opt-whitespace> "|" <opt-whitespace> <expression>
+;; <expression> ::= <list> | <list> <opt-whitespace> "|"
+;; <opt-whitespace> <expression>
 (define bnf-expr
-  (+++ (letM* ((l bnf-list)
-               (_ space)
-               (_ (char #\|))
-               (_ space)
-               (e bnf-expr))
-              (return `(or ,l ,e)))
+  (<:> (doM* (l <- bnf-list)
+             space
+             (char #\|)
+             space
+             (e <- bnf-expr)
+             (return `(or ,l ,e)))
        bnf-list))
+
+;; <rule> ::= <opt-whitespace> "<" <rule-name> ">" <opt-whitespace>
+;; "::=" <opt-whitespace> <expression> <line-end>
+(define rule
+  (doM* space
+        (str "<")
+        (rn <- rule-name)
+        (str ">")
+        space
+        (str "::=")
+        space
+        (e <- bnf-expr)
+        line-end
+        (return `(bnf-rule ,rn ,e))))
+
+;; <syntax> ::= <rule> | <rule> <syntax>
+(define bnf-syntax
+  (<:> (doM* (r <- rule)
+             (s <- bnf-syntax)
+             (return (cons r s)))
+       rule))
 
 ;; <letter> ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" |
 ;; "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" |
@@ -340,18 +406,18 @@
 
 ;; <character>      ::= <letter> | <digit> | <symbol>
 (define bnf-character
-  (+++ bnf-letter
-       (+++ bnf-digit
-            bnf-symbol)))
+  (<:> bnf-letter
+       bnf-digit
+       bnf-symbol))
 
 ;; <character1> ::= <character> | "'"
 (define character1
-  (+++ bnf-character
+  (<:> bnf-character
        (char #\')))
 
 ;; <character2> ::= <character> | '"'
 (define character2
-  (+++ bnf-character
+  (<:> bnf-character
        (char #\")))
 
 ;; <text1> ::= "" | <character1> <text1>
@@ -364,14 +430,76 @@
 
 ;; <rule-char> ::= <letter> | <digit> | "-"
 (define rule-char
-  (+++ bnf-letter
-       (+++ bnf-digit
-            (char #\-))))
+  (<:> bnf-letter
+       bnf-digit
+       (char #\-)))
 
 ;; <rule-name> ::= <letter> | <rule-name> <rule-char>
 (define rule-name
-  (letM* ((n (many (+++ bnf-letter
-                        rule-char))))
-         ;; Convert them to symbols so they look pretty.
-         (return (string->symbol n))))
+  (doM* (n <- (many (<:> bnf-letter
+                         rule-char)))
+        ;; Convert them to symbols so they look pretty.
+        (return (string->symbol n))))
 
+(define symb-char
+  (oneof "!@#$%^&*_+-"))
+
+(define (parse p s)
+  (let ((a (p s)))
+    (if (null? a)
+        (emit "Parsing failed.")
+        (if (not (string-null? (cdr a)))
+            (begin (emit "Warning: Unconsumed input from position ~a, \"~a\""
+                         (- (string-length s) (string-length (cdr a)))
+                         (cdr a))
+                   (car a))
+            (car a)))))
+
+(define lisp-string
+  (doM* (char #\")
+        (x <- (many (noneof "\"")))
+        (char #\")
+        (return x)))
+
+(define lisp-atom
+  (doM* (first <- (<:> alpha symb-char))
+        (rest <- (many (<:> alpha digit symb-char)))
+        (let ((atom (cons-string first rest)))
+          (return (cond ((string=? atom "#t") #t)
+                        ((string=? atom "#f") #f)
+                        (else (string->symbol atom)))))))
+
+
+(define lisp-quoted
+  (<:> (doM* (char #\')
+             (x <- lisp-expr)
+             (return `(quote ,x)))
+       (doM* (char #\`)
+             (x <- lisp-expr)
+             (return (list 'quasiquote x)))
+       (doM* (char #\,)
+             (x <- lisp-expr)
+             (return (list 'unquote x)))))
+
+(define lisp-expr
+  (<:> lisp-atom
+       lisp-string
+       lisp-number
+       lisp-quoted
+       (doM* (char #\()
+             (x <- (<:> lisp-dotted-list
+                        lisp-list))
+             (char #\))
+             (return x))))
+
+(define lisp-number nat)
+
+(define lisp-list
+  (sepby-n lisp-expr space))
+
+(define lisp-dotted-list
+  (doM* (head <- (token lisp-expr))
+        (tail <- (doM* (char #\.)
+                       space
+                       lisp-expr))
+        (return (cons head tail))))
