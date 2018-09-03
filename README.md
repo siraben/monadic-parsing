@@ -14,8 +14,8 @@ my_parser = do a <- item
                return (a, b)
 ```
 
-May be converted to the following Scheme equivalent (using the `letM*`
-macro).
+May be converted to the following Scheme equivalent (using the `doM*`
+macro, which mimics Haskell).
 
 ```scheme
 (define my_parser
@@ -64,9 +64,9 @@ parsing:
 - Chapter 8 of the book _Programming in Haskell_ by Graham Hutton.
 - [The blog post by Oleg that inspired it all](http://okmij.org/ftp/Scheme/monad-in-Scheme.html)
 
-Most of the functions were just re-written in Scheme, so operations
-like `>>=` and `<:>` which are infixed in Haskell have been converted
-to prefix notation.
+Most of the functions were re-written in Scheme, so functions like
+`>>=` and `<:>` which are normally infixed in Haskell must be applied
+prefix-style in Scheme.
 
 There were differences in the naming of functions in these resources
 (e.g. `return` `(a -> M a)` is called `unit` in Wadler's paper).  I
@@ -78,3 +78,4 @@ use my own conventions here, yours may differ.
     means we may need to implement monad transformers.
 - XML parser.
 - Parsing BNF into Scheme/Haskell parsers!
+- Separate code to take advantage of the Scheme module system.
