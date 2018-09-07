@@ -481,6 +481,8 @@
              (x <- lisp-expr)
              (return (list 'unquote x)))))
 
+(define lisp-number nat)
+
 (define lisp-expr
   (<:> lisp-atom
        lisp-string
@@ -491,8 +493,6 @@
                         lisp-list))
              (char #\))
              (return x))))
-
-(define lisp-number nat)
 
 (define lisp-list
   (sepby-n lisp-expr space))
